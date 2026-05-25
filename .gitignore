@@ -1,3 +1,7 @@
+package.json
+package-lock.json
+server.js
 node_modules/
 data.json
 .env
+.netlify
