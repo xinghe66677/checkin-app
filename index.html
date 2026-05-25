@@ -120,6 +120,24 @@ body {
 
 .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #333; color: #fff; padding: 10px 24px; border-radius: 20px; font-size: 14px; z-index: 1000; opacity: 0; transition: opacity 0.3s; pointer-events: none; }
 .toast.show { opacity: 1; }
+
+.manual-add-btn { display: block; margin: 12px auto 0; background: none; border: 1.5px dashed #ccc; color: var(--text2); font-size: 13px; padding: 8px 20px; border-radius: 20px; cursor: pointer; }
+.manual-add-btn:active { background: #f5f5f5; }
+
+.modal-overlay { display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.5); z-index: 1000; align-items: center; justify-content: center; }
+.modal-overlay.show { display: flex; }
+.modal { background: #fff; border-radius: 16px; padding: 24px 20px; width: 90%; max-width: 380px; }
+.modal h3 { text-align: center; margin-bottom: 20px; font-size: 18px; }
+.modal label { display: block; font-size: 14px; font-weight: 500; margin-bottom: 6px; color: var(--text2); }
+.modal select, .modal input { width: 100%; padding: 10px; border: 1px solid #ddd; border-radius: 8px; font-size: 15px; margin-bottom: 14px; -webkit-appearance: none; }
+.modal .btn-row { display: flex; gap: 10px; margin-top: 6px; }
+.modal .btn-row button { flex: 1; padding: 12px; border: none; border-radius: 25px; font-size: 15px; font-weight: 600; cursor: pointer; }
+.modal .btn-cancel { background: #f0f0f0; color: #666; }
+.modal .btn-confirm { background: var(--success); color: #fff; }
+.modal .btn-confirm:active { opacity: 0.85; }
+
+.record-delete { background: none; border: none; color: #ccc; font-size: 18px; cursor: pointer; padding: 0 4px; line-height: 1; margin-left: 6px; }
+.record-delete:active { color: #e74c3c; }
 </style>
 </head>
 <body>
@@ -132,6 +150,7 @@ body {
       <div class="date" id="headerDate"></div>
     </div>
     <div class="checkin-cards" id="checkinCards"></div>
+    <button class="manual-add-btn" onclick="showManualModal()">+ 手动添加打卡</button>
     <div class="section-title">今日打卡记录</div>
     <div class="records-card" id="todayRecords"></div>
     <div class="section-title">打卡统计</div>
@@ -148,6 +167,20 @@ body {
       <label>第二个人</label>
       <input type="text" id="cfgName2" maxlength="10">
       <button class="save-btn" onclick="saveConfig()">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="manualModal" onclick="if(event.target===this)hideManualModal()">
+  <div class="modal">
+    <h3>手动添加打卡</h3>
+    <label>选择成员</label>
+    <select id="manualPerson"></select>
+    <label>选择时间</label>
+    <input type="datetime-local" id="manualTime">
+    <div class="btn-row">
+      <button class="btn-cancel" onclick="hideManualModal()">取消</button>
+      <button class="btn-confirm" onclick="handleManualCheckin()">确认添加</button>
     </div>
   </div>
 </div>
@@ -187,6 +220,14 @@ async function sbPatchConfig(key, value) {
   });
 }
 
+async function sbDelete(table, id) {
+  var res = await fetch(SB_URL + '/rest/v1/' + table + '?id=eq.' + id, {
+    method: 'DELETE',
+    headers: sbHeaders()
+  });
+  if (!res.ok) throw new Error('Delete failed');
+}
+
 // State
 var persons = ['小明', '小红'];
 var checkins = [];
@@ -224,14 +265,16 @@ async function loadData() {
     sbGet('checkins', 'select=*&order=created_at.desc'),
     sbGet('config', 'select=*')
   ]);
-  checkins = results[0].map(function(c) { return { person: c.person, time: c.created_at }; });
+  checkins = results[0].map(function(c) { return { id: c.id, person: c.person, time: c.created_at }; });
   var cfg = {};
   results[1].forEach(function(c) { cfg[c.key] = c.value; });
   if (cfg.person1 && cfg.person2) persons = [cfg.person1, cfg.person2];
 }
 
-async function doCheckin(person) {
-  var result = await sbPost('checkins', { person: person });
+async function doCheckin(person, customTime) {
+  var body = { person: person };
+  if (customTime) body.created_at = customTime;
+  var result = await sbPost('checkins', body);
   return result[0];
 }
 
@@ -279,7 +322,7 @@ function renderTodayRecords() {
   var sorted = records.slice().reverse();
   container.innerHTML = sorted.map(function(c) {
     var cls = c.person === persons[0] ? 'p1' : 'p2';
-    return '<div class="record-row"><div class="record-dot '+cls+'"></div><div class="record-name">'+c.person+'</div><div class="record-time">'+fmtTime(c.time)+'</div><div class="record-check">✓</div></div>';
+    return '<div class="record-row"><div class="record-dot '+cls+'"></div><div class="record-name">'+c.person+'</div><div class="record-time">'+fmtTime(c.time)+'</div><button class="record-delete" onclick="event.stopPropagation();deleteRecord('+c.id+')" title="删除">×</button></div>';
   }).join('');
 }
 
@@ -415,6 +458,47 @@ async function handleCheckin(person, idx) {
   }
   btn.disabled = false;
   btn.textContent = '打 卡';
+}
+
+function showManualModal() {
+  var sel = document.getElementById('manualPerson');
+  sel.innerHTML = persons.map(function(n, i) { return '<option value="'+n+'">'+n+'</option>'; }).join('');
+  var now = new Date();
+  var local = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0,16);
+  document.getElementById('manualTime').value = local;
+  document.getElementById('manualModal').classList.add('show');
+}
+
+function hideManualModal() {
+  document.getElementById('manualModal').classList.remove('show');
+}
+
+async function handleManualCheckin() {
+  var person = document.getElementById('manualPerson').value;
+  var timeVal = document.getElementById('manualTime').value;
+  if (!timeVal) { toast('请选择时间'); return; }
+  var customTime = new Date(timeVal).toISOString();
+  try {
+    await doCheckin(person, customTime);
+    await loadData();
+    renderAll();
+    hideManualModal();
+    toast('手动打卡成功！');
+  } catch(e) {
+    toast('打卡失败，请重试');
+  }
+}
+
+async function deleteRecord(id) {
+  if (!confirm('确定要删除这条打卡记录吗？')) return;
+  try {
+    await sbDelete('checkins', id);
+    await loadData();
+    renderAll();
+    toast('已删除');
+  } catch(e) {
+    toast('删除失败，请重试');
+  }
 }
 
 function toggleConfig() {
